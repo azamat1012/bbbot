@@ -1,0 +1,17 @@
+matplotlib
+pandas
+googletrans==4.0.0rc1 
+pypdf
+openpyxl
+xlrd
+Pillow 
+pdf2image
+beautifulsoup4
+requests
+pyTelegramBotAPI
+pytz
+python-dotenv
+schedule
+beautifulsoup4
+lxml    
+
