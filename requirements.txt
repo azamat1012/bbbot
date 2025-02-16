@@ -2,7 +2,6 @@ matplotlib
 pandas
 googletrans==4.0.0-rc1
 pypdf
-multiprocessing
 openpyxl
 xlrd
 Pillow
