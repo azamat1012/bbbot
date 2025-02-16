@@ -200,26 +200,21 @@ def get_shift_pdf_url_for_date(date_to_find, base_url="https://www.ects.ru/page2
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
     }
 
-    scrapingbee_url = f"https://app.scrapingbee.com/api/v1/?api_key={SCRAPINGBEE_API_KEY}&url={base_url}"
-
     try:
-        response = requests.get(scrapingbee_url, headers=headers, timeout=10)
-        print(f"Status Code: {response.status_code}")
-        print(f"Response Text: {response.text[:500]}")
-
+        response = requests.get(base_url, headers=headers, timeout=10)
         response.raise_for_status()
 
         soup = BeautifulSoup(response.content, 'lxml')
 
         document_div = soup.find('div', class_='document')
         if not document_div:
-            logger.error("Document div not found on the page.")
+            print("Document div not found on the page.")
             return None
 
         pdf_links = [urljoin(base_url, link['href']) for link in document_div.find_all(
             'a', href=True) if link['href'].endswith('.pdf')]
         if not pdf_links:
-            logger.error("No PDF links found in the document div.")
+            print("No PDF links found in the document div.")
             return None
 
         month_mapping = {
@@ -250,62 +245,42 @@ def get_shift_pdf_url_for_date(date_to_find, base_url="https://www.ects.ru/page2
         return latest_pdf_url
 
     except requests.RequestException as e:
-        logger.error(f"Ошибка при запросе к сайту: {e}")
+        print(f"Error fetching website data: {e}")
         return None
 
 
-def download_image(image_url):
+def download_pdf(pdf_url):
     try:
-        response = requests.get(image_url, timeout=10)
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        }
+        response = requests.get(pdf_url, headers=headers, timeout=10)
         response.raise_for_status()
         return BytesIO(response.content)
     except requests.RequestException as e:
-        logger.error(f"Ошибка загрузки изображения: {e}")
+        print(f"Error downloading PDF: {e}")
         return None
 
 
-def download_pdf_with_scrapingbee(pdf_url):
-    try:
-        scrapingbee_url = f"https://app.scrapingbee.com/api/v1/?api_key={SCRAPINGBEE_API_KEY}&url={pdf_url}"
-        response = requests.get(scrapingbee_url, timeout=10)
-        response.raise_for_status()
-        return BytesIO(response.content)
-    except requests.RequestException as e:
-        logger.error(f"Ошибка загрузки PDF: {e}")
-        return None
-
-
-def pdf_to_image(pdf_content: BytesIO) -> BytesIO | None:
+def pdf_to_image(pdf_content: BytesIO) -> list[BytesIO] | None:
     try:
         images = convert_from_bytes(pdf_content.getvalue(), dpi=150)
 
         if not images:
-            logger.error("Ошибка: pdf2image не смог преобразовать PDF.")
-            return None
-        first_page = images[0]
-        width, total_height = first_page.width, sum(
-            img.height for img in images)
-
-        if total_height == 0:
-            logger.error("Ошибка: Высота изображения = 0.")
+            print("Error: pdf2image could not convert PDF.")
             return None
 
-        combined_image = Image.new('RGB', (width, total_height))
-        y_offset = 0
-
+        image_bytes_list = []
         for img in images:
-            combined_image.paste(img, (0, y_offset))
-            y_offset += img.height
+            img_byte_arr = BytesIO()
+            img.save(img_byte_arr, format='PNG', optimize=True, quality=85)
+            img_byte_arr.seek(0)
+            image_bytes_list.append(img_byte_arr)
 
-        img_byte_arr = BytesIO()
-        combined_image.save(img_byte_arr, format='PNG',
-                            optimize=True, quality=85)
-        img_byte_arr.seek(0)
-
-        return img_byte_arr
+        return image_bytes_list
 
     except Exception as e:
-        logger.error(f"Ошибка при конвертации PDF: {e}")
+        print(f"Error converting PDF: {e}")
         return None
 
 
@@ -342,74 +317,46 @@ def load_from_cache(pdf_url):
 
 
 def send_todays_shift(bot: telebot.TeleBot, chat_id: int, retry_count: int = 1):
-    logger.info("Fetching today's shift changes...")
-
+    print("Fetching today's shift changes...")
     today = date.today()
     pdf_url = get_shift_pdf_url_for_date(today)
 
     if not pdf_url:
         if retry_count > 0:
-            with open(os.path.join(MEDIA_DIR, "git1.gif"), 'rb') as gif_file:
+            with open("git1.gif", 'rb') as gif_file:
                 loading_message = bot.send_animation(
-                    chat_id, gif_file, caption="пупупу..., ща"
-                )
+                    chat_id, gif_file, caption="пупупу..., ща")
             bot.delete_message(chat_id, loading_message.message_id)
             time.sleep(2)
             return send_todays_shift(bot, chat_id, retry_count - 1)
         else:
-            with open(os.path.join(MEDIA_DIR, "git2.gif"), 'rb') as gif_file:
-                loading_message = bot.send_animation(chat_id, gif_file)
-            return
+            with open("git2.gif", 'rb') as gif_file:
+                bot.send_animation(chat_id, gif_file)
+            return []
 
     try:
-        cached_images = load_from_cache(pdf_url)
-        if cached_images:
-            logger.info("Using cached images.")
-        else:
-            # Download the PDF using ScrapingBee
-            pdf_content = download_pdf_with_scrapingbee(pdf_url)
-            if not pdf_content:
-                bot.send_message(chat_id, "Не удалось загрузить PDF.")
-                return
+        pdf_content = download_pdf(pdf_url)
+        if not pdf_content:
+            bot.send_message(chat_id, "Не удалось загрузить PDF.")
+            return []
 
-            # Convert PDF to images (one image per page)
-            images = convert_from_bytes(pdf_content.getvalue(), dpi=150)
-            if not images:
-                bot.send_message(
-                    chat_id, "Не удалось преобразовать график в изображение.")
-                return
+        images = pdf_to_image(pdf_content)
+        if not images:
+            bot.send_message(
+                chat_id, "Не удалось преобразовать график в изображение.")
+            return []
 
-            # Save images to cache
-            image_bytes_list = []
-            for img in images:
-                img_byte_arr = BytesIO()
-                img.save(img_byte_arr, format='PNG')  # Save each page as PNG
-                img_byte_arr.seek(0)
-                image_bytes_list.append(img_byte_arr)
-
-            save_to_cache(pdf_url, image_bytes_list)
-            cached_images = image_bytes_list
-
-        # Prepare a list of InputMediaPhoto objects for the media group
-        media_group = []
-        for image_bytes in cached_images:
-            media_group.append(telebot.types.InputMediaPhoto(image_bytes))
-
-        # Send all images as a single media group message
+        media_group = [telebot.types.InputMediaPhoto(
+            image) for image in images]
         sent_messages = bot.send_media_group(chat_id, media_group)
 
-        # Store the message IDs in shift_messages
-        if chat_id not in shift_messages['Последние изменения']:
-            shift_messages['Последние изменения'][chat_id] = []
-        shift_messages['Последние изменения'][chat_id].extend(
-            [msg.message_id for msg in sent_messages]
-        )
-        logger.info(
-            f"Stored message IDs: {shift_messages['Последние изменения'][chat_id]}")
+        # Return message IDs for tracking
+        return [msg.message_id for msg in sent_messages]
 
     except Exception as e:
         bot.send_message(chat_id, "Произошла ошибка при обработке графика.")
-        logger.error(f"Unexpected Error: {e}")
+        print(f"Unexpected Error: {e}")
+        return []
 
 
 def prepare_image_for_telegram(image: Image.Image) -> telebot.types.InputMediaPhoto:
@@ -420,7 +367,7 @@ def prepare_image_for_telegram(image: Image.Image) -> telebot.types.InputMediaPh
 
 
 load_dotenv()
-# current_dir = os.path.dirname(__file__)
+
 current_dir = os.path.dirname(os.path.abspath(__file__))
 MEDIA_DIR = os.path.join(current_dir, "media")
 RIJKSMUSEUM_API_KEY = "rgDy3FHZ"
@@ -605,6 +552,16 @@ def handle_callbacks(bot: telebot.TeleBot):
             except Exception as e:
                 logger.error(
                     f"Failed to send weather image to user {chat_id}: {e}")
+
+
+def download_image(image_url):
+    try:
+        response = requests.get(image_url, timeout=10)
+        response.raise_for_status()
+        return BytesIO(response.content)
+    except requests.RequestException as e:
+        logger.error(f"Ошибка загрузки изображения: {e}")
+        return None
 
 
 def handle_messages(bot: telebot.TeleBot):
@@ -849,7 +806,7 @@ def keep_alive():
 
 def main():
     load_dotenv()
-    token_tg = "7825037688:AAFbBSyiIvSABFB2Tjn5feeEhaEX56dv2QU"
+    token_tg = "7617045383:AAHP-t_NNyrt-qion9TFL71HegCJXwR_EZM"
     print(token_tg)
     print(RIJKSMUSEUM_API_KEY)
     if not token_tg:
