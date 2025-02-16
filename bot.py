@@ -31,18 +31,13 @@ import logging
 import schedule
 import sqlite3
 
-# Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Database setup
-
-# Thread-local storage for SQLite connections
 thread_local = threading.local()
 
 
 def get_db_connection():
-    """Returns a thread-local SQLite connection."""
     if not hasattr(thread_local, "conn"):
         thread_local.conn = sqlite3.connect(
             f'{current_dir}/bot.db', check_same_thread=False)
@@ -50,7 +45,6 @@ def get_db_connection():
 
 
 def init_db():
-    """Initializes the database schema."""
     conn = get_db_connection()
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS users
@@ -59,7 +53,6 @@ def init_db():
 
 
 def get_or_create_user(chat_id, first_name, last_name, username):
-    """Gets or creates a user in the database."""
     conn = get_db_connection()
     c = conn.cursor()
     c.execute("SELECT * FROM users WHERE chat_id = ?", (chat_id,))
@@ -78,7 +71,6 @@ def get_all_users():
     c = conn.cursor()
     c.execute("SELECT chat_id FROM users")
     return [row[0] for row in c.fetchall()]
-# Keyboard functions
 
 
 def create_first_keyboard():
@@ -87,7 +79,8 @@ def create_first_keyboard():
     button2 = types.KeyboardButton('Немного вдохновения')
     button3 = types.KeyboardButton('Основное расписание')
     button4 = types.KeyboardButton("Перемены")
-    keyboard.add(button1, button2, button3, button4)
+    button5 = types.KeyboardButton("Погода")
+    keyboard.add(button1, button2, button3, button4, button5)
     return keyboard
 
 
@@ -95,6 +88,14 @@ def continue_keyboards():
     keyboard = types.InlineKeyboardMarkup()
     accept_button = InlineKeyboardButton("Okk", callback_data='Okk')
     keyboard.add(accept_button)
+    return keyboard
+
+
+def weather_keyboards():
+    keyboard = types.InlineKeyboardMarkup()
+    today_button = InlineKeyboardButton("Today!", callback_data='today')
+    tomorrow_button = InlineKeyboardButton("Завтра", callback_data='tomorrow')
+    keyboard.add(today_button, tomorrow_button)
     return keyboard
 
 
@@ -109,14 +110,19 @@ def create_consent_keyboard():
 shift_messages = {
     'Основное расписание': {},
     'Перемены': {},
-    'Последние изменения': {}
+    'Последние изменения': {},
+    'Немного вдохновения': {},
+    'Погода': {},
+    'Погода Утро': {},
+    'Погода Вечер': {},
 }
 
 
 def delete_previous_shifts(bot: telebot.TeleBot, shift_type: str):
-    """Deletes all previous shift messages of a specific type across all chats."""
     if shift_type in shift_messages:
+        logger.info(f"Deleting previous {shift_type} messages...")
         for chat_id, message_ids in shift_messages[shift_type].items():
+            logger.info(f"Chat ID: {chat_id}, Message IDs: {message_ids}")
             for message_id in message_ids:
                 try:
                     bot.delete_message(chat_id, message_id)
@@ -127,8 +133,45 @@ def delete_previous_shifts(bot: telebot.TeleBot, shift_type: str):
         shift_messages[shift_type] = {}
 
 
+def create_weather_image(weather_message: str) -> BytesIO:
+    current_dir = "."  
+    image_path = f"{current_dir}/media/ping.jpg"
+    image = Image.open(image_path)
+
+    # Initialize ImageDraw
+    draw = ImageDraw.Draw(image)
+
+    try:
+
+        font_path = f"{current_dir}/fonts/DejaVuSans.ttf"
+        font = ImageFont.truetype(font_path, 60)
+    except IOError:
+        logger.error("Failed to load font. Using default font.")
+        font = ImageFont.load_default()
+
+    text_position = (450, 70)
+    text_color = (255, 255, 0)
+
+    if "температура от" in weather_message:
+        temp_range = weather_message.split("температура от ")[1].split("°C")[0]
+        temp_range = temp_range.replace(" до ", "-") + "°C"
+    elif "температура" in weather_message:
+        temp_range = weather_message.split("температура ")[
+            1].split("°C")[0] + "°C"
+    else:
+        temp_range = "N/A"
+
+    draw.text(text_position,
+              temp_range, font=font, fill=text_color)
+
+    image_bytes = BytesIO()
+    image.save(image_bytes, format="PNG")
+    image_bytes.seek(0)
+
+    return image_bytes
+
+
 def get_shift_pdf_url_for_date(date_to_find: date, base_url="https://www.ects.ru/page281.htm"):
-    """Fetches the latest shift PDF URL from the website."""
     try:
         response = requests.get(base_url, timeout=5)
         response.raise_for_status()
@@ -151,7 +194,6 @@ def get_shift_pdf_url_for_date(date_to_find: date, base_url="https://www.ects.ru
         }
 
         def extract_date_from_filename(filename):
-            """Extracts date from filenames like '15_janvarja_2024.pdf' or '15_janvarja_novoe.pdf'."""
             match = re.search(
                 r"(\d{2})_([a-z]+)(?:_\d{4}|_[a-z]+)*\.pdf", filename, re.IGNORECASE)
             if not match:
@@ -175,7 +217,6 @@ def get_shift_pdf_url_for_date(date_to_find: date, base_url="https://www.ects.ru
 
 
 def pdf_to_image(pdf_content: BytesIO) -> BytesIO | None:
-    """Converts PDF to image and returns BytesIO."""
     try:
         images = convert_from_bytes(pdf_content.getvalue(), dpi=150)
 
@@ -197,7 +238,6 @@ def pdf_to_image(pdf_content: BytesIO) -> BytesIO | None:
             combined_image.paste(img, (0, y_offset))
             y_offset += img.height
 
-        # Compress image
         img_byte_arr = BytesIO()
         combined_image.save(img_byte_arr, format='PNG',
                             optimize=True, quality=85)
@@ -209,18 +249,14 @@ def pdf_to_image(pdf_content: BytesIO) -> BytesIO | None:
         logger.error(f"Ошибка при конвертации PDF: {e}")
         return None
 
-# Bot handlers
-
 
 def split_image_into_chunks(image: Image.Image, max_chunks: int) -> list:
-    """Splits an image into max_chunks equal parts."""
     width, height = image.size
     chunk_height = height // max_chunks
     return [image.crop((0, i * chunk_height, width, (i + 1) * chunk_height)) for i in range(max_chunks)]
 
 
 def prepare_image_for_telegram(image: Image.Image) -> telebot.types.InputMediaPhoto:
-    """Converts an image to a format suitable for Telegram."""
     chunk_io = BytesIO()
     image.save(chunk_io, format='PNG', optimize=True, quality=85)
     chunk_io.seek(0)
@@ -228,7 +264,6 @@ def prepare_image_for_telegram(image: Image.Image) -> telebot.types.InputMediaPh
 
 
 def send_todays_shift(bot: telebot.TeleBot, chat_id: int):
-    """Fetches today's shift, converts it to images, and sends them."""
     delete_previous_shifts(bot, 'Последние изменения')
 
     today = date.today()
@@ -296,8 +331,11 @@ def handle_start(bot: telebot.TeleBot):
         last_name = message.chat.last_name
         username = message.chat.username
         created = get_or_create_user(chat_id, first_name, last_name, username)
+        print(f"START THE BOT-------> @{username}")
+
         if created:
-            logger.info(f"User {chat_id} added to the database.")
+            logger.info(
+                f"START THE BOT-------> @{username}\nUser {chat_id} added to the database.")
         else:
             logger.info(f"User {chat_id} already exists in the database.")
 
@@ -314,6 +352,7 @@ def handle_callbacks(bot: telebot.TeleBot):
         chat_id = call.message.chat.id
         user_action = call.data
         from_user = call.from_user
+
         if user_action == "reject":
             bot.send_message(chat_id, f"Не-а!")
             handle_start(bot)
@@ -322,7 +361,7 @@ def handle_callbacks(bot: telebot.TeleBot):
                 chat_id, f"Спасибо!\nДавай, знакомиться, чуть ближе)")
             time.sleep(5)
             bot.send_message(chat_id, f"Меня зовут...Амм....")
-            time.sleep(5)
+            time.sleep(2)
             bot.send_message(chat_id, f"Меня пока никак не зовут. Если хочешь можешь дать мне имя в настройках )",
                              reply_markup=continue_keyboards())
 
@@ -352,7 +391,59 @@ def handle_callbacks(bot: telebot.TeleBot):
             time.sleep(5)
             bot.send_message(chat_id, f"Поэтому, мое существование и служение Тебе - истина первой инстанции! Я постараюсь сэкономить это время минимум в два раза.\nТолько включи уведомления\n Спамить не буду! Обещаю. Только самое важное\nЯ готов!🫡", reply_markup=create_first_keyboard())
 
-# Main bot logic
+        elif user_action == "today":
+            delete_previous_shifts(bot, 'Погода')
+
+            weather_message = get_weather("today")
+            try:
+                image_bytes = create_weather_image(weather_message)
+            except Exception as e:
+                logger.error(f"Failed to create weather image: {e}")
+                bot.send_message(chat_id, weather_message)
+                return
+
+            try:
+                sent_message = bot.send_photo(
+                    chat_id,
+                    photo=image_bytes,
+                    caption=weather_message
+                )
+
+                if chat_id not in shift_messages['Погода']:
+                    shift_messages['Погода'][chat_id] = []
+                shift_messages['Погода'][chat_id].append(
+                    sent_message.message_id)
+
+            except Exception as e:
+                logger.error(
+                    f"Failed to send weather image to user {chat_id}: {e}")
+
+        elif user_action == "tomorrow":
+            delete_previous_shifts(bot, 'Погода')
+
+            weather_message = get_weather("tomorrow")
+            try:
+                image_bytes = create_weather_image(weather_message)
+            except Exception as e:
+                logger.error(f"Failed to create weather image: {e}")
+                bot.send_message(chat_id, weather_message)
+                return
+
+            try:
+                sent_message = bot.send_photo(
+                    chat_id,
+                    photo=image_bytes,
+                    caption=weather_message
+                )
+
+                if chat_id not in shift_messages['Погода']:
+                    shift_messages['Погода'][chat_id] = []
+                shift_messages['Погода'][chat_id].append(
+                    sent_message.message_id)
+
+            except Exception as e:
+                logger.error(
+                    f"Failed to send weather image to user {chat_id}: {e}")
 
 
 load_dotenv()
@@ -362,7 +453,6 @@ RIJKSMUSEUM_API_URL = "https://www.rijksmuseum.nl/api/en/collection"
 
 
 def get_random_artwork():
-    """Fetches a random artwork from the Rijksmuseum API."""
     params = {
         "key": RIJKSMUSEUM_API_KEY,
         "type": "painting",
@@ -391,7 +481,6 @@ def get_random_artwork():
 
 
 def translate_to_russian(text: str) -> str:
-    """Переводит текст с английского на русский с использованием Google Translate API."""
     translator = Translator()
     try:
         translated = translator.translate(text, src='en', dest='ru')
@@ -402,7 +491,6 @@ def translate_to_russian(text: str) -> str:
 
 
 def get_inspiring_quote():
-    """Fetch an inspiring quote in Russian from the Forismatic API."""
     url = "http://api.forismatic.com/api/1.0/"
     params = {
         "method": "getQuote",
@@ -424,38 +512,57 @@ def handle_messages(bot: telebot.TeleBot):
     @bot.message_handler(func=lambda message: True)
     def handler_message(message):
         if message.text == 'Немного вдохновения' or message.text == '/inspirations':
+            delete_previous_shifts(bot, 'Немного вдохновения')
+
             loading_message = bot.send_photo(
                 message.chat.id,
                 photo=open(f"{current_dir}/media/duck.png", 'rb'),
-                caption="Ищу что-то вдохновляющее...")
+                caption="Ищу что-то вдохновляющее..."
+            )
 
             image_url, caption = get_random_artwork()
-
             caption_translated = translate_to_russian(str(caption))
             inspiring_quote = get_inspiring_quote()
+
             if image_url:
                 try:
                     image_response = requests.get(image_url, timeout=10)
                     image_response.raise_for_status()
                     image_bytes = BytesIO(image_response.content)
 
-                    bot.send_photo(
+                    sent_message = bot.send_photo(
                         message.chat.id,
                         photo=image_bytes,
                         caption=f"🏷️ '{caption_translated}'\n\n------------\n{inspiring_quote}",
                         has_spoiler=True
                     )
+
                     bot.delete_message(
                         message.chat.id, loading_message.message_id)
+
+                    if message.chat.id not in shift_messages['Немного вдохновения']:
+                        shift_messages['Немного вдохновения'][message.chat.id] = [
+                        ]
+                    shift_messages['Немного вдохновения'][message.chat.id].append(
+                        sent_message.message_id)
+
                 except requests.RequestException as e:
                     logger.error(f"Ошибка при загрузке изображения: {e}")
                     bot.send_message(
-                        message.chat.id, f"Я не нашел изображений\nНО!\nМожет эти слова тебя вдохновят?\n{inspiring_quote}")
+                        message.chat.id,
+                        f"Я не нашел изображений\nНО!\nМожет эти слова тебя вдохновят?\n{inspiring_quote}"
+                    )
             else:
-                bot.delete_message(
-                    message.chat.id, loading_message.message_id)
-                bot.send_message(
-                    message.chat.id, f"Damn, я не нашел изображение, но зато узнал, вот что: \n{inspiring_quote}")
+                bot.delete_message(message.chat.id, loading_message.message_id)
+                sent_message = bot.send_message(
+                    message.chat.id,
+                    f"Damn, я не нашел изображение, но зато узнал, вот что: \n{inspiring_quote}"
+                )
+
+                if message.chat.id not in shift_messages['Немного вдохновения']:
+                    shift_messages['Немного вдохновения'][message.chat.id] = []
+                shift_messages['Немного вдохновения'][message.chat.id].append(
+                    sent_message.message_id)
 
         elif message.text == 'Последние изменения' or message.text == '/changes':
             sent_message = bot.send_photo(
@@ -487,7 +594,6 @@ def handle_messages(bot: telebot.TeleBot):
 
         elif message.text == 'Перемены' or message.text == '/breaks':
             delete_previous_shifts(bot, 'Перемены')
-
             sent_message = bot.send_photo(
                 message.chat.id,
                 photo=open(f"{current_dir}/media/shift2.png", 'rb'),
@@ -498,9 +604,22 @@ def handle_messages(bot: telebot.TeleBot):
             shift_messages['Перемены'][message.chat.id].append(
                 sent_message.message_id)
 
+        elif message.text == 'Погода' or message.text == '/weather':
+            delete_previous_shifts(bot, 'Погода')
+
+            sent_message = bot.send_photo(
+                message.chat.id,
+                photo=open(f"{current_dir}/media/weather.png", "rb"),
+                caption="На сегодня? На завтра?",
+                reply_markup=weather_keyboards()
+            )
+            if message.chat.id not in shift_messages['Погода']:
+                shift_messages['Погода'][message.chat.id] = []
+            shift_messages['Погода'][message.chat.id].append(
+                sent_message.message_id)
+
 
 def get_weather(day: str) -> str:
-    """Fetch weather data for Yekaterinburg from WeatherAPI."""
     base_url = "http://api.weatherapi.com/v1/forecast.json"
     params = {
         "key": "23e2e18225f64393b23132659240510",
@@ -531,9 +650,7 @@ def get_weather(day: str) -> str:
         logger.error(f"Ошибка при запросе погоды: {e}")
         return "Не удалось получить данные о погоде."
 
-
 def send_weather(bot, forecast_type):
-    """Sends weather updates to all users."""
     logger.info(f"Executing send_weather for {forecast_type} forecast!")
 
     conn = get_db_connection()
@@ -548,28 +665,45 @@ def send_weather(bot, forecast_type):
     for user in users:
         chat_id = user[0]
         weather_message = get_weather(forecast_type)
+
         if forecast_type == "today":
-            try:
-                bot.send_photo(
+            shift_type = "Погода Утро"
+        elif forecast_type == "tomorrow":
+            shift_type = "Погода Вечер"
+
+        delete_previous_shifts(bot, shift_type)
+
+        try:
+            image_bytes = create_weather_image(weather_message)
+        except Exception as e:
+            logger.error(f"Failed to create weather image: {e}")
+            sent_message = bot.send_message(chat_id, weather_message)
+            if chat_id not in shift_messages[shift_type]:
+                shift_messages[shift_type][chat_id] = []
+            shift_messages[shift_type][chat_id].append(sent_message.message_id)
+            continue
+
+        try:
+            if forecast_type == "today":
+                sent_message = bot.send_photo(
                     chat_id,
                     photo=open(f"{current_dir}/media/cat2.png", 'rb'),
-                    caption=f"{weather_message}\n\nПожалуйста, Даш, оденься по погоде\n🫰🏻"
+                    caption=weather_message
                 )
-            except Exception as e:
-                logger.error(
-                    f"Failed to send weather update to user {chat_id}: {e}")
-        else:
-            try:
-                bot.send_photo(
+            elif forecast_type == "tomorrow":
+                sent_message = bot.send_photo(
                     chat_id,
                     photo=open(f"{current_dir}/media/cat3.png", 'rb'),
-                    caption=f"{weather_message}\n\n🌗"
+                    caption=weather_message
                 )
-            except Exception as e:
-                logger.error(
-                    f"Failed to send weather update to user {chat_id}: {e}")
 
-    logger.info(f"Sent {forecast_type} weather update to {len(users)} users.")
+            if chat_id not in shift_messages[shift_type]:
+                shift_messages[shift_type][chat_id] = []
+            shift_messages[shift_type][chat_id].append(sent_message.message_id)
+
+        except Exception as e:
+            logger.error(
+                f"Failed to send weather update to user {chat_id}: {e}")
 
 
 YEKAT_TIMEZONE = pytz.timezone("Asia/Yekaterinburg")
@@ -580,13 +714,14 @@ def get_yekaterinburg_time():
 
 
 def schedule_weather_updates(bot):
-    """Schedules weather updates at 8 AM and 8 PM in Yekaterinburg time."""
     logger.info(f"Current Yekaterinburg time: {get_yekaterinburg_time()}")
 
-    schedule.every().day.at("08:00", "Asia/Yekaterinburg").do(send_weather,
-                                                              bot=bot, forecast_type="today")
-    schedule.every().day.at("00:23", "Asia/Yekaterinburg").do(send_weather,
-                                                              bot=bot, forecast_type="tomorrow")
+    schedule.every().day.at("08:00", "Asia/Yekaterinburg").do(
+        send_weather, bot=bot, forecast_type="today"
+    )
+    schedule.every().day.at("20:55", "Asia/Yekaterinburg").do(
+        send_weather, bot=bot, forecast_type="tomorrow"
+    )
 
     def run_scheduler():
         while True:
@@ -596,6 +731,11 @@ def schedule_weather_updates(bot):
     thread = threading.Thread(target=run_scheduler, daemon=True)
     thread.start()
 
+
+def keep_alive():
+    while True:
+        logger.info("Keep-alive: Bot is running...")
+        time.sleep(3600)  
 
 def main():
     load_dotenv()
@@ -617,14 +757,19 @@ def main():
     handle_messages(bot)
 
     schedule_weather_updates(bot)
-    logger.info("Handlers registered.")
+    logger.info("Weather update scheduler started.")
+
+    keep_alive_thread = threading.Thread(target=keep_alive, daemon=True)
+    keep_alive_thread.start()
+    logger.info("Keep-alive thread started.")
 
     logger.info("Starting bot polling...")
     while True:
         try:
-            bot.polling(none_stop=True, interval=1)
+            bot.infinity_polling(none_stop=True, interval=1)
         except Exception as e:
             logger.error(f"Bot polling error: {e}")
+            logger.info("Restarting bot in 5 seconds...")
             time.sleep(5)
 
 
