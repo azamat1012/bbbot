@@ -1,3 +1,4 @@
+from urllib.parse import urljoin
 import matplotlib
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -30,11 +31,30 @@ import telebot
 import logging
 import schedule
 import sqlite3
+import time
+import os
+import sys
+import hashlib
+CACHE_DIR = "pdf_cache"
+os.makedirs(CACHE_DIR, exist_ok=True)
 
+last_activity_time = time.time()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 thread_local = threading.local()
+
+
+def check_inactivity(bot):
+    global last_activity_time
+    inactivity_threshold = 3600
+
+    while True:
+        time_since_last_activity = time.time() - last_activity_time
+        if time_since_last_activity > inactivity_threshold:
+            logger.info("No activity detected. Restarting bot...")
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+        time.sleep(60)
 
 
 def get_db_connection():
@@ -125,6 +145,8 @@ def delete_previous_shifts(bot: telebot.TeleBot, shift_type: str):
             logger.info(f"Chat ID: {chat_id}, Message IDs: {message_ids}")
             for message_id in message_ids:
                 try:
+                    logger.info(
+                        f"Attempting to delete message ID: {message_id}")
                     bot.delete_message(chat_id, message_id)
                     logger.info(
                         f"Deleted {shift_type} message with ID: {message_id}")
@@ -134,11 +156,10 @@ def delete_previous_shifts(bot: telebot.TeleBot, shift_type: str):
 
 
 def create_weather_image(weather_message: str) -> BytesIO:
-    current_dir = "."  
+    current_dir = "."
     image_path = f"{current_dir}/media/ping.jpg"
     image = Image.open(image_path)
 
-    # Initialize ImageDraw
     draw = ImageDraw.Draw(image)
 
     try:
@@ -171,25 +192,40 @@ def create_weather_image(weather_message: str) -> BytesIO:
     return image_bytes
 
 
-def get_shift_pdf_url_for_date(date_to_find: date, base_url="https://www.ects.ru/page281.htm"):
+SCRAPINGBEE_API_KEY = 'UC2X12YO2MANX9GKURL0A6LAFVHBCWYT33BPNUXD7B6ON4IJHTRSZ47XM7KB1VI3K9X5RAK17VKG7IPO'
+
+
+def get_shift_pdf_url_for_date(date_to_find, base_url="https://www.ects.ru/page281.htm"):
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+    }
+
+    scrapingbee_url = f"https://app.scrapingbee.com/api/v1/?api_key={SCRAPINGBEE_API_KEY}&url={base_url}"
+
     try:
-        response = requests.get(base_url, timeout=5)
+        response = requests.get(scrapingbee_url, headers=headers, timeout=10)
+        print(f"Status Code: {response.status_code}")
+        print(f"Response Text: {response.text[:500]}")
+
         response.raise_for_status()
+
         soup = BeautifulSoup(response.content, 'lxml')
 
         document_div = soup.find('div', class_='document')
         if not document_div:
+            logger.error("Document div not found on the page.")
             return None
 
-        pdf_links = [link['href'] for link in document_div.find_all(
+        pdf_links = [urljoin(base_url, link['href']) for link in document_div.find_all(
             'a', href=True) if link['href'].endswith('.pdf')]
         if not pdf_links:
+            logger.error("No PDF links found in the document div.")
             return None
 
         month_mapping = {
             "january": "janvarja", "february": "fevralja", "march": "marta",
             "april": "aprelja", "may": "maja", "june": "ijunja",
-            "july": "ijulja", "august": "avgusta", "September": "sentjabrja",
+            "july": "ijulja", "august": "avgusta", "september": "sentjabrja",
             "october": "oktjabrja", "november": "nojabrja", "december": "dekabrja"
         }
 
@@ -198,21 +234,44 @@ def get_shift_pdf_url_for_date(date_to_find: date, base_url="https://www.ects.ru
                 r"(\d{2})_([a-z]+)(?:_\d{4}|_[a-z]+)*\.pdf", filename, re.IGNORECASE)
             if not match:
                 return None
-
             day, month_russian = int(match.group(1)), match.group(2).lower()
             month_english = next(
                 (eng for eng, rus in month_mapping.items() if rus == month_russian), None)
             if not month_english:
                 return None
-
             return date(date_to_find.year, list(calendar.month_name).index(month_english.capitalize()), day)
 
-        latest_pdf_url = max(((pdf, extract_date_from_filename(pdf.split('/')[-1])) for pdf in pdf_links),
-                             key=lambda x: x[1] if x[1] else date.min, default=(None, None))[0]
+        latest_pdf_url = max(
+            ((pdf, extract_date_from_filename(
+                pdf.split('/')[-1])) for pdf in pdf_links),
+            key=lambda x: x[1] if x[1] else date.min,
+            default=(None, None)
+        )[0]
         return latest_pdf_url
 
-    except requests.RequestException:
-        logger.error("Ошибка при запросе к сайту.")
+    except requests.RequestException as e:
+        logger.error(f"Ошибка при запросе к сайту: {e}")
+        return None
+
+
+def download_image(image_url):
+    try:
+        response = requests.get(image_url, timeout=10)
+        response.raise_for_status()
+        return BytesIO(response.content)
+    except requests.RequestException as e:
+        logger.error(f"Ошибка загрузки изображения: {e}")
+        return None
+
+
+def download_pdf_with_scrapingbee(pdf_url):
+    try:
+        scrapingbee_url = f"https://app.scrapingbee.com/api/v1/?api_key={SCRAPINGBEE_API_KEY}&url={pdf_url}"
+        response = requests.get(scrapingbee_url, timeout=10)
+        response.raise_for_status()
+        return BytesIO(response.content)
+    except requests.RequestException as e:
+        logger.error(f"Ошибка загрузки PDF: {e}")
         return None
 
 
@@ -250,10 +309,107 @@ def pdf_to_image(pdf_content: BytesIO) -> BytesIO | None:
         return None
 
 
-def split_image_into_chunks(image: Image.Image, max_chunks: int) -> list:
-    width, height = image.size
-    chunk_height = height // max_chunks
-    return [image.crop((0, i * chunk_height, width, (i + 1) * chunk_height)) for i in range(max_chunks)]
+def get_cache_key(pdf_url):
+    """Generate a unique cache key for the PDF URL."""
+    return hashlib.md5(pdf_url.encode()).hexdigest()
+
+
+def save_to_cache(pdf_url, images):
+    """Save images to the cache."""
+    cache_key = get_cache_key(pdf_url)
+    cache_dir = os.path.join(CACHE_DIR, cache_key)
+    os.makedirs(cache_dir, exist_ok=True)
+
+    for i, image_bytes in enumerate(images):
+        with open(os.path.join(cache_dir, f"page_{i + 1}.png"), "wb") as f:
+            f.write(image_bytes.getvalue())
+
+
+def load_from_cache(pdf_url):
+    """Load images from the cache."""
+    cache_key = get_cache_key(pdf_url)
+    cache_dir = os.path.join(CACHE_DIR, cache_key)
+
+    if not os.path.exists(cache_dir):
+        return None
+
+    images = []
+    for file_name in sorted(os.listdir(cache_dir)):
+        if file_name.endswith(".png"):
+            with open(os.path.join(cache_dir, file_name), "rb") as f:
+                images.append(BytesIO(f.read()))
+    return images
+
+
+def send_todays_shift(bot: telebot.TeleBot, chat_id: int, retry_count: int = 1):
+    logger.info("Fetching today's shift changes...")
+
+    today = date.today()
+    pdf_url = get_shift_pdf_url_for_date(today)
+
+    if not pdf_url:
+        if retry_count > 0:
+            with open(os.path.join(MEDIA_DIR, "git1.gif"), 'rb') as gif_file:
+                loading_message = bot.send_animation(
+                    chat_id, gif_file, caption="пупупу..., ща"
+                )
+            bot.delete_message(chat_id, loading_message.message_id)
+            time.sleep(2)
+            return send_todays_shift(bot, chat_id, retry_count - 1)
+        else:
+            with open(os.path.join(MEDIA_DIR, "git2.gif"), 'rb') as gif_file:
+                loading_message = bot.send_animation(chat_id, gif_file)
+            return
+
+    try:
+        cached_images = load_from_cache(pdf_url)
+        if cached_images:
+            logger.info("Using cached images.")
+        else:
+            # Download the PDF using ScrapingBee
+            pdf_content = download_pdf_with_scrapingbee(pdf_url)
+            if not pdf_content:
+                bot.send_message(chat_id, "Не удалось загрузить PDF.")
+                return
+
+            # Convert PDF to images (one image per page)
+            images = convert_from_bytes(pdf_content.getvalue(), dpi=150)
+            if not images:
+                bot.send_message(
+                    chat_id, "Не удалось преобразовать график в изображение.")
+                return
+
+            # Save images to cache
+            image_bytes_list = []
+            for img in images:
+                img_byte_arr = BytesIO()
+                img.save(img_byte_arr, format='PNG')  # Save each page as PNG
+                img_byte_arr.seek(0)
+                image_bytes_list.append(img_byte_arr)
+
+            save_to_cache(pdf_url, image_bytes_list)
+            cached_images = image_bytes_list
+
+        # Prepare a list of InputMediaPhoto objects for the media group
+        media_group = []
+        for image_bytes in cached_images:
+            media_group.append(telebot.types.InputMediaPhoto(image_bytes))
+
+        # Send all images as a single media group message
+        sent_messages = bot.send_media_group(chat_id, media_group)
+
+        # Store the message IDs in shift_messages
+        if chat_id not in shift_messages['Последние изменения']:
+            shift_messages['Последние изменения'][chat_id] = []
+        shift_messages['Последние изменения'][chat_id].extend(
+            [msg.message_id for msg in sent_messages]
+        )
+        logger.info(
+            f"Stored message IDs: {shift_messages['Последние изменения'][chat_id]}")
+
+    except Exception as e:
+        bot.send_message(chat_id, "Произошла ошибка при обработке графика.")
+        logger.error(f"Unexpected Error: {e}")
 
 
 def prepare_image_for_telegram(image: Image.Image) -> telebot.types.InputMediaPhoto:
@@ -263,69 +419,72 @@ def prepare_image_for_telegram(image: Image.Image) -> telebot.types.InputMediaPh
     return telebot.types.InputMediaPhoto(chunk_io)
 
 
-def send_todays_shift(bot: telebot.TeleBot, chat_id: int):
-    delete_previous_shifts(bot, 'Последние изменения')
+load_dotenv()
+# current_dir = os.path.dirname(__file__)
+current_dir = os.path.dirname(os.path.abspath(__file__))
+MEDIA_DIR = os.path.join(current_dir, "media")
+RIJKSMUSEUM_API_KEY = "rgDy3FHZ"
+RIJKSMUSEUM_API_URL = "https://www.rijksmuseum.nl/api/en/collection"
 
-    today = date.today()
-    pdf_url = get_shift_pdf_url_for_date(today)
 
-    if not pdf_url:
-        bot.send_message(chat_id, "Сегодняшние изменения еще не доступны")
-        return
+def get_random_artwork():
+    params = {
+        "key": RIJKSMUSEUM_API_KEY,
+        "type": "painting",
+        "imgonly": True,
+        "ps": 100,
+        "s": "relevance",
+        "toppieces": True
+    }
+    try:
+        response = requests.get(RIJKSMUSEUM_API_URL, params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+
+        if data.get("artObjects"):
+            artwork = random.choice(data["artObjects"])
+            return artwork["webImage"]["url"], f"{artwork['title']} by {artwork['principalOrFirstMaker']}"
+        else:
+            logger.error("No artworks found in the API response.")
+            return None, None
+    except requests.RequestException as e:
+        logger.error(f"Error fetching artwork: {e}")
+        return None, None
+
+
+def translate_to_russian(text: str) -> str:
+    translator = Translator()
+    try:
+        translated = translator.translate(text, src='en', dest='ru')
+        return translated.text
+    except Exception as e:
+        logger.error(f"Ошибка при переводе текста: {e}")
+        return text
+
+
+def get_inspiring_quote():
+    url = "http://api.forismatic.com/api/1.0/"
+    params = {
+        "method": "getQuote",
+        "format": "json",
+        "lang": "ru"
+    }
 
     try:
-        pdf_response = requests.get(pdf_url)
-        pdf_response.raise_for_status()
-        pdf_content = pdf_response.content
-
-        combined_image_data = pdf_to_image(BytesIO(pdf_content))
-        if not combined_image_data:
-            bot.send_message(
-                chat_id, "Не удалось преобразовать график в изображение.")
-            return
-
-        combined_image_data.seek(0)
-        combined_image = Image.open(combined_image_data)
-
-        reader = pypdf.PdfReader(BytesIO(pdf_content))
-        num_pages = len(reader.pages)
-        num_chunks = min(num_pages, 3)
-
-        chunks = split_image_into_chunks(combined_image, num_chunks)
-
-        with ThreadPool(len(chunks)) as pool:
-            media_group = pool.map(prepare_image_for_telegram, chunks)
-
-        sent_messages = bot.send_media_group(chat_id, media_group)
-        if chat_id not in shift_messages['Последние изменения']:
-            shift_messages['Последние изменения'][chat_id] = []
-        shift_messages['Последние изменения'][chat_id].extend(
-            [msg.message_id for msg in sent_messages])
-
-        follow_up_message = bot.send_message(
-            chat_id=chat_id,
-            text="ПУ-ПУ-ПУ🙄",
-            reply_markup=create_first_keyboard()
-        )
-        shift_messages['Последние изменения'][chat_id].append(
-            follow_up_message.message_id)
-
-    except requests.RequestException as req_err:
-        bot.send_message(chat_id, "Ошибка при загрузке графика.")
-        logger.error(f"Request Error: {req_err}")
-
-    except pypdf.errors.PdfReadError as pdf_err:
-        bot.send_message(chat_id, "Ошибка при обработке PDF.")
-        logger.error(f"PDF Error: {pdf_err}")
-
-    except Exception as e:
-        bot.send_message(chat_id, "Произошла ошибка при обработке графика.")
-        logger.error(f"Unexpected Error: {e}")
+        response = requests.get(url, params=params)
+        response.raise_for_status()
+        data = response.json()
+        return f"{data['quoteText']}\n— {data['quoteAuthor']}"
+    except requests.RequestException as e:
+        logger.error(f"Ошибка при запросе цитаты: {e}")
+        return "Сегодняшнее вдохновение недоступно. Попробуйте позже."
 
 
 def handle_start(bot: telebot.TeleBot):
     @bot.message_handler(commands=['start'])
     def send_welcome(message):
+        global last_activity_time
+        last_activity_time = time.time()
         chat_id = message.chat.id
         first_name = message.chat.first_name
         last_name = message.chat.last_name
@@ -349,6 +508,8 @@ def handle_start(bot: telebot.TeleBot):
 def handle_callbacks(bot: telebot.TeleBot):
     @bot.callback_query_handler(func=lambda call: True)
     def handle_callback(call):
+        global last_activity_time
+        last_activity_time = time.time()
         chat_id = call.message.chat.id
         user_action = call.data
         from_user = call.from_user
@@ -357,8 +518,8 @@ def handle_callbacks(bot: telebot.TeleBot):
             bot.send_message(chat_id, f"Не-а!")
             handle_start(bot)
         elif user_action == 'accept':
-            bot.send_message(
-                chat_id, f"Спасибо!\nДавай, знакомиться, чуть ближе)")
+            with open(os.path.join(MEDIA_DIR, "git3.gif"), 'rb') as gif_file:
+                loading_message = bot.send_animation(chat_id, gif_file)
             time.sleep(5)
             bot.send_message(chat_id, f"Меня зовут...Амм....")
             time.sleep(2)
@@ -446,90 +607,28 @@ def handle_callbacks(bot: telebot.TeleBot):
                     f"Failed to send weather image to user {chat_id}: {e}")
 
 
-load_dotenv()
-current_dir = os.path.dirname(__file__)
-RIJKSMUSEUM_API_KEY = "rgDy3FHZ"
-RIJKSMUSEUM_API_URL = "https://www.rijksmuseum.nl/api/en/collection"
-
-
-def get_random_artwork():
-    params = {
-        "key": RIJKSMUSEUM_API_KEY,
-        "type": "painting",
-        "imgonly": True,
-        "ps": 100,
-        "s": "relevance",
-        "toppieces": True
-    }
-    try:
-        response = requests.get(RIJKSMUSEUM_API_URL, params=params, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-
-        if data.get("artObjects"):
-            artwork = random.choice(data["artObjects"])
-            image_url = artwork["webImage"]["url"]
-            title = artwork["title"]
-            artist = artwork["principalOrFirstMaker"]
-            return image_url, f"{title} by {artist}"
-        else:
-            logger.error("No artworks found in the API response.")
-            return None, None
-    except requests.RequestException as e:
-        logger.error(f"Error fetching artwork from Rijksmuseum API: {e}")
-        return None, None
-
-
-def translate_to_russian(text: str) -> str:
-    translator = Translator()
-    try:
-        translated = translator.translate(text, src='en', dest='ru')
-        return translated.text
-    except Exception as e:
-        logger.error(f"Ошибка при переводе текста: {e}")
-        return text
-
-
-def get_inspiring_quote():
-    url = "http://api.forismatic.com/api/1.0/"
-    params = {
-        "method": "getQuote",
-        "format": "json",
-        "lang": "ru"
-    }
-
-    try:
-        response = requests.get(url, params=params)
-        response.raise_for_status()
-        data = response.json()
-        return f"{data['quoteText']}\n— {data['quoteAuthor']}"
-    except requests.RequestException as e:
-        logger.error(f"Ошибка при запросе цитаты: {e}")
-        return "Сегодняшнее вдохновение недоступно. Попробуйте позже."
-
-
 def handle_messages(bot: telebot.TeleBot):
     @bot.message_handler(func=lambda message: True)
     def handler_message(message):
-        if message.text == 'Немного вдохновения' or message.text == '/inspirations':
+        global last_activity_time
+        last_activity_time = time.time()
+
+        if message.text in ['Немного вдохновения', '/inspirations']:
             delete_previous_shifts(bot, 'Немного вдохновения')
 
             loading_message = bot.send_photo(
                 message.chat.id,
-                photo=open(f"{current_dir}/media/duck.png", 'rb'),
+                photo=open(os.path.join(MEDIA_DIR, "duck.png"), 'rb'),
                 caption="Ищу что-то вдохновляющее..."
             )
 
             image_url, caption = get_random_artwork()
-            caption_translated = translate_to_russian(str(caption))
+            caption_translated = translate_to_russian(caption)
             inspiring_quote = get_inspiring_quote()
 
             if image_url:
                 try:
-                    image_response = requests.get(image_url, timeout=10)
-                    image_response.raise_for_status()
-                    image_bytes = BytesIO(image_response.content)
-
+                    image_bytes = download_image(image_url)
                     sent_message = bot.send_photo(
                         message.chat.id,
                         photo=image_bytes,
@@ -539,58 +638,49 @@ def handle_messages(bot: telebot.TeleBot):
 
                     bot.delete_message(
                         message.chat.id, loading_message.message_id)
+                    shift_messages['Немного вдохновения'].setdefault(
+                        message.chat.id, []).append(sent_message.message_id)
+                    logger.info(
+                        f"Stored inspiration message ID: {sent_message.message_id}")
 
-                    if message.chat.id not in shift_messages['Немного вдохновения']:
-                        shift_messages['Немного вдохновения'][message.chat.id] = [
-                        ]
-                    shift_messages['Немного вдохновения'][message.chat.id].append(
-                        sent_message.message_id)
-
-                except requests.RequestException as e:
+                except Exception as e:
                     logger.error(f"Ошибка при загрузке изображения: {e}")
                     bot.send_message(
                         message.chat.id,
-                        f"Я не нашел изображений\nНО!\nМожет эти слова тебя вдохновят?\n{inspiring_quote}"
+                        f"Я не нашел изображений, но вот что я узнал:\n{inspiring_quote}"
                     )
             else:
                 bot.delete_message(message.chat.id, loading_message.message_id)
                 sent_message = bot.send_message(
                     message.chat.id,
-                    f"Damn, я не нашел изображение, но зато узнал, вот что: \n{inspiring_quote}"
+                    f"Я не нашел изображение, но зато узнал, вот что:\n{inspiring_quote}"
                 )
+                shift_messages['Немного вдохновения'].setdefault(
+                    message.chat.id, []).append(sent_message.message_id)
+                logger.info(
+                    f"Stored inspiration message ID: {sent_message.message_id}")
 
-                if message.chat.id not in shift_messages['Немного вдохновения']:
-                    shift_messages['Немного вдохновения'][message.chat.id] = []
-                shift_messages['Немного вдохновения'][message.chat.id].append(
-                    sent_message.message_id)
+        elif message.text in ['Последние изменения', '/changes']:
+            delete_previous_shifts(bot, 'Последние изменения')
 
-        elif message.text == 'Последние изменения' or message.text == '/changes':
-            sent_message = bot.send_photo(
+            loading_message = bot.send_photo(
                 message.chat.id,
                 photo=open(f"{current_dir}/media/cat.jpg", 'rb'),
                 caption="ОК, ищу изменения...", reply_markup=create_first_keyboard()
             )
 
-            send_todays_shift(bot, message.chat.id)
+            new_messages = send_todays_shift(bot, message.chat.id)
 
             try:
-                bot.delete_message(message.chat.id, sent_message.message_id)
+                bot.delete_message(message.chat.id, loading_message.message_id)
                 logger.info(
-                    f"Deleted cat image message with ID: {sent_message.message_id}")
+                    f"Deleted cat image message with ID: {loading_message.message_id}")
             except Exception as e:
                 logger.error(f"Failed to delete cat image message: {e}")
 
-        elif message.text == 'Основное расписание' or message.text == '/schedule':
-            delete_previous_shifts(bot, 'Основное расписание')
-            sent_message = bot.send_photo(
-                message.chat.id,
-                photo=open(f"{current_dir}/media/shift.png", 'rb'),
-                caption=f"\n", reply_markup=create_first_keyboard()
-            )
-            if message.chat.id not in shift_messages['Основное расписание']:
-                shift_messages['Основное расписание'][message.chat.id] = []
-            shift_messages['Основное расписание'][message.chat.id].append(
-                sent_message.message_id)
+            # Store the new message IDs for tracking
+            if new_messages:
+                shift_messages['Последние изменения'][message.chat.id] = new_messages
 
         elif message.text == 'Перемены' or message.text == '/breaks':
             delete_previous_shifts(bot, 'Перемены')
@@ -603,10 +693,24 @@ def handle_messages(bot: telebot.TeleBot):
                 shift_messages['Перемены'][message.chat.id] = []
             shift_messages['Перемены'][message.chat.id].append(
                 sent_message.message_id)
+            logger.info(f"Stored break message ID: {sent_message.message_id}")
+
+        elif message.text == 'Основное расписание' or message.text == '/schedule':
+            delete_previous_shifts(bot, 'Основное расписание')
+            sent_message = bot.send_photo(
+                message.chat.id,
+                photo=open(f"{current_dir}/media/shift.png", 'rb'),
+                caption=f"\n", reply_markup=create_first_keyboard()
+            )
+            if message.chat.id not in shift_messages['Основное расписание']:
+                shift_messages['Основное расписание'][message.chat.id] = []
+            shift_messages['Основное расписание'][message.chat.id].append(
+                sent_message.message_id)
+            logger.info(
+                f"Stored schedule message ID: {sent_message.message_id}")
 
         elif message.text == 'Погода' or message.text == '/weather':
             delete_previous_shifts(bot, 'Погода')
-
             sent_message = bot.send_photo(
                 message.chat.id,
                 photo=open(f"{current_dir}/media/weather.png", "rb"),
@@ -617,6 +721,8 @@ def handle_messages(bot: telebot.TeleBot):
                 shift_messages['Погода'][message.chat.id] = []
             shift_messages['Погода'][message.chat.id].append(
                 sent_message.message_id)
+            logger.info(
+                f"Stored weather message ID: {sent_message.message_id}")
 
 
 def get_weather(day: str) -> str:
@@ -649,6 +755,7 @@ def get_weather(day: str) -> str:
     except requests.RequestException as e:
         logger.error(f"Ошибка при запросе погоды: {e}")
         return "Не удалось получить данные о погоде."
+
 
 def send_weather(bot, forecast_type):
     logger.info(f"Executing send_weather for {forecast_type} forecast!")
@@ -714,6 +821,8 @@ def get_yekaterinburg_time():
 
 
 def schedule_weather_updates(bot):
+    global last_activity_time
+    last_activity_time = time.time()
     logger.info(f"Current Yekaterinburg time: {get_yekaterinburg_time()}")
 
     schedule.every().day.at("08:00", "Asia/Yekaterinburg").do(
@@ -735,11 +844,12 @@ def schedule_weather_updates(bot):
 def keep_alive():
     while True:
         logger.info("Keep-alive: Bot is running...")
-        time.sleep(3600)  
+        time.sleep(3600)
+
 
 def main():
     load_dotenv()
-    token_tg = "7962658875:AAEyvJCCPRbemdPNignuMn3S0lUHTctMLCU"
+    token_tg = "7825037688:AAFbBSyiIvSABFB2Tjn5feeEhaEX56dv2QU"
     print(token_tg)
     print(RIJKSMUSEUM_API_KEY)
     if not token_tg:
@@ -762,6 +872,11 @@ def main():
     keep_alive_thread = threading.Thread(target=keep_alive, daemon=True)
     keep_alive_thread.start()
     logger.info("Keep-alive thread started.")
+
+    inactivity_checker_thread = threading.Thread(
+        target=check_inactivity, args=(bot,), daemon=True)
+    inactivity_checker_thread.start()
+    logger.info("Inactivity checker thread started.")
 
     logger.info("Starting bot polling...")
     while True:
