@@ -6,12 +6,9 @@ openpyxl
 xlrd
 Pillow
 pdf2image
-io
-calendar
 requests
 beautifulsoup4
 pyTelegramBotAPI
 pytz
 python-dotenv
 schedule
-sqlite3
