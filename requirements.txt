@@ -12,3 +12,6 @@ pyTelegramBotAPI
 pytz
 python-dotenv
 schedule
+flask
+gunicorn
+pytelegrambotapi
