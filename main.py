@@ -806,7 +806,7 @@ def keep_alive():
 
 def main():
     load_dotenv()
-    token_tg = "7825037688:AAFbBSyiIvSABFB2Tjn5feeEhaEX56dv2QU"
+    token_tg = "7617045383:AAHP-t_NNyrt-qion9TFL71HegCJXwR_EZM"
     print(token_tg)
     print(RIJKSMUSEUM_API_KEY)
     if not token_tg:
