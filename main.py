@@ -804,7 +804,6 @@ def keep_alive():
         logger.info("Keep-alive: Bot is running...")
         time.sleep(3600)
 
-
 def main():
     load_dotenv()
     token_tg = "7825037688:AAFbBSyiIvSABFB2Tjn5feeEhaEX56dv2QU"
@@ -839,7 +838,7 @@ def main():
     logger.info("Starting bot polling...")
     while True:
         try:
-            bot.infinity_polling(none_stop=True, interval=1)
+            bot.polling(none_stop=True, interval=1)
         except Exception as e:
             logger.error(f"Bot polling error: {e}")
             logger.info("Restarting bot in 5 seconds...")
