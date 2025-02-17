@@ -798,52 +798,143 @@ def schedule_weather_updates(bot):
     thread.start()
 
 
+# def keep_alive():
+#     while True:
+#         logger.info("Keep-alive: Bot is running...")
+#         time.sleep(3600)
+
+
+# def main():
+#     load_dotenv()
+#     token_tg = "7617045383:AAHP-t_NNyrt-qion9TFL71HegCJXwR_EZM"
+#     print(token_tg)
+#     print(RIJKSMUSEUM_API_KEY)
+#     if not token_tg:
+#         logger.error("Error: TG_BOT_TOKEN not found in .env")
+#         sys.exit(1)
+
+#     init_db()
+#     logger.info("Database initialized.")
+
+#     bot = telebot.TeleBot(token_tg)
+#     logger.info("Bot instance created.")
+
+#     handle_start(bot)
+#     handle_callbacks(bot)
+#     handle_messages(bot)
+
+#     schedule_weather_updates(bot)
+#     logger.info("Weather update scheduler started.")
+
+#     keep_alive_thread = threading.Thread(target=keep_alive, daemon=True)
+#     keep_alive_thread.start()
+#     logger.info("Keep-alive thread started.")
+
+#     inactivity_checker_thread = threading.Thread(
+#         target=check_inactivity, args=(bot,), daemon=True)
+#     inactivity_checker_thread.start()
+#     logger.info("Inactivity checker thread started.")
+
+#     logger.info("Starting bot polling...")
+#     while True:
+#         try:
+#             bot.infinity_polling(none_stop=True, interval=1)
+#         except Exception as e:
+#             logger.error(f"Bot polling error: {e}")
+#             logger.info("Restarting bot in 5 seconds...")
+#             time.sleep(5)
+
+
+# if __name__ == "__main__":
+#     main()
+
+import os
+import sys
+import time
+import threading
+import logging
+import telebot
+from flask import Flask, request
+
+# Logger setup
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Hardcoded Token (Change this later for security)
+TOKEN_TG = "7617045383:AAHP-t_NNyrt-qion9TFL71HegCJXwR_EZM"
+
+# Bot Instance
+bot = telebot.TeleBot(TOKEN_TG)
+
+# Flask App for Webhooks
+app = Flask(__name__)
+
+# ===========================
+# 🔹 Keep Alive Function
+# ===========================
 def keep_alive():
     while True:
         logger.info("Keep-alive: Bot is running...")
         time.sleep(3600)
 
+# ===========================
+# 🔹 Webhook Route
+# ===========================
+@app.route(f"/{TOKEN_TG}", methods=["POST"])
+def receive_update():
+    update = telebot.types.Update.de_json(request.get_json())
+    bot.process_new_updates([update])
+    return "OK", 200
 
+# ===========================
+# 🔹 Main Function
+# ===========================
 def main():
-    load_dotenv()
-    token_tg = "7617045383:AAHP-t_NNyrt-qion9TFL71HegCJXwR_EZM"
-    print(token_tg)
-    print(RIJKSMUSEUM_API_KEY)
-    if not token_tg:
-        logger.error("Error: TG_BOT_TOKEN not found in .env")
+    logger.info("Starting bot...")
+
+    # Ensure the bot token exists
+    if not TOKEN_TG:
+        logger.error("Error: TG_BOT_TOKEN is missing!")
         sys.exit(1)
 
+    # Initialize DB if needed
     init_db()
     logger.info("Database initialized.")
 
-    bot = telebot.TeleBot(token_tg)
-    logger.info("Bot instance created.")
-
+    # Register Handlers
     handle_start(bot)
     handle_callbacks(bot)
     handle_messages(bot)
 
+    # Start Weather Updates
     schedule_weather_updates(bot)
     logger.info("Weather update scheduler started.")
 
+    # Keep-alive thread
     keep_alive_thread = threading.Thread(target=keep_alive, daemon=True)
     keep_alive_thread.start()
     logger.info("Keep-alive thread started.")
 
-    inactivity_checker_thread = threading.Thread(
-        target=check_inactivity, args=(bot,), daemon=True)
+    # Inactivity Checker
+    inactivity_checker_thread = threading.Thread(target=check_inactivity, args=(bot,), daemon=True)
     inactivity_checker_thread.start()
     logger.info("Inactivity checker thread started.")
 
-    logger.info("Starting bot polling...")
-    while True:
-        try:
-            bot.infinity_polling(none_stop=True, interval=1)
-        except Exception as e:
-            logger.error(f"Bot polling error: {e}")
-            logger.info("Restarting bot in 5 seconds...")
-            time.sleep(5)
+    # Remove previous webhook (important for redeployments)
+    bot.remove_webhook()
+    time.sleep(1)
 
+    # Set new webhook
+    RAILWAY_URL = "https://your-railway-app.up.railway.app"
+    webhook_url = f"{RAILWAY_URL}/{TOKEN_TG}"
+    bot.set_webhook(url=webhook_url)
+    logger.info(f"Webhook set to: {webhook_url}")
 
+    # Start Flask server
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
+
+# ===========================
+# 🔹 Run Script
+# ===========================
 if __name__ == "__main__":
     main()
