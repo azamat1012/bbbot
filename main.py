@@ -195,8 +195,6 @@ def create_weather_image(weather_message: str) -> BytesIO:
     return image_bytes
 
 
-SCRAPINGBEE_API_KEY = 'UC2X12YO2MANX9GKURL0A6LAFVHBCWYT33BPNUXD7B6ON4IJHTRSZ47XM7KB1VI3K9X5RAK17VKG7IPO'
-
 
 def get_shift_pdf_url_for_date(date_to_find, base_url="https://www.ects.ru/page281.htm"):
     headers = {
@@ -374,7 +372,7 @@ def send_todays_shift(bot: telebot.TeleBot, chat_id: int, retry_count: int = 1):
             image) for image in images]
         sent_messages = bot.send_media_group(chat_id, media_group)
         bot.send_message(
-            chat_id, f"Изменения на {today.strftime('%d.%m')}", reply_markup=create_first_keyboard())
+            chat_id, "Последние изменения", reply_markup=create_first_keyboard())
         return [msg.message_id for msg in sent_messages]
 
     except Exception as e:
