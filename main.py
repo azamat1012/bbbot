@@ -36,6 +36,8 @@ import time
 import os
 import sys
 import hashlib
+import schedule
+
 CACHE_DIR = "pdf_cache"
 os.makedirs(CACHE_DIR, exist_ok=True)
 
@@ -250,6 +252,27 @@ def get_shift_pdf_url_for_date(date_to_find, base_url="https://www.ects.ru/page2
         return None
 
 
+def check_and_send_new_shift(bot: telebot.TeleBot):
+    """
+    Checks for new shifts and sends them to all users in the database.
+    """
+    today = date.today()
+    pdf_url = get_shift_pdf_url_for_date(today)
+
+    if pdf_url:
+        # Fetch all users from the database
+        users_to_notify = get_all_users()
+
+        for user_id in users_to_notify:
+            try:
+                # Send the shift to the user
+                send_todays_shift(bot, user_id)
+                logger.info(f"Sent shift update to user {user_id}")
+            except Exception as e:
+                logger.error(
+                    f"Failed to send shift update to user {user_id}: {e}")
+
+
 def download_pdf(pdf_url):
     try:
         headers = {
@@ -350,8 +373,8 @@ def send_todays_shift(bot: telebot.TeleBot, chat_id: int, retry_count: int = 1):
         media_group = [telebot.types.InputMediaPhoto(
             image) for image in images]
         sent_messages = bot.send_media_group(chat_id, media_group)
-
-        # Return message IDs for tracking
+        bot.send_message(
+            chat_id, f"Изменения на {today.strftime('%d.%m')}", reply_markup=create_first_keyboard())
         return [msg.message_id for msg in sent_messages]
 
     except Exception as e:
@@ -591,7 +614,8 @@ def handle_messages(bot: telebot.TeleBot):
                         message.chat.id,
                         photo=image_bytes,
                         caption=f"🏷️ '{caption_translated}'\n\n------------\n{inspiring_quote}",
-                        has_spoiler=True
+                        has_spoiler=True,
+                        reply_markup=create_first_keyboard()
                     )
 
                     bot.delete_message(
@@ -605,13 +629,13 @@ def handle_messages(bot: telebot.TeleBot):
                     logger.error(f"Ошибка при загрузке изображения: {e}")
                     bot.send_message(
                         message.chat.id,
-                        f"Я не нашел изображений, но вот что я узнал:\n{inspiring_quote}"
+                        f"Я не нашел изображений, но вот что я узнал:\n{inspiring_quote}", reply_markup=create_first_keyboard()
                     )
             else:
                 bot.delete_message(message.chat.id, loading_message.message_id)
                 sent_message = bot.send_message(
                     message.chat.id,
-                    f"Я не нашел изображение, но зато узнал, вот что:\n{inspiring_quote}"
+                    f"Я не нашел изображение, но зато узнал, вот что:\n{inspiring_quote}", reply_markup=create_first_keyboard()
                 )
                 shift_messages['Немного вдохновения'].setdefault(
                     message.chat.id, []).append(sent_message.message_id)
@@ -636,7 +660,6 @@ def handle_messages(bot: telebot.TeleBot):
             except Exception as e:
                 logger.error(f"Failed to delete cat image message: {e}")
 
-            # Store the new message IDs for tracking
             if new_messages:
                 shift_messages['Последние изменения'][message.chat.id] = new_messages
 
@@ -799,10 +822,31 @@ def schedule_weather_updates(bot):
     thread.start()
 
 
+def schedule_shift_updates(bot):
+    """
+    Schedules the shift update task to run every hour.
+    """
+    schedule.every().hour.do(check_and_send_new_shift, bot=bot)
+
+    def run_scheduler():
+        """
+        Runs the scheduler in a separate thread.
+        """
+        while True:
+            schedule.run_pending()
+            time.sleep(1)
+
+    # Start the scheduler in a separate thread
+    scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
+    scheduler_thread.start()
+    logger.info("Shift update scheduler started.")
+
+
 def keep_alive():
     while True:
         logger.info("Keep-alive: Bot is running...")
         time.sleep(3600)
+
 
 def main():
     load_dotenv()
@@ -826,6 +870,9 @@ def main():
     schedule_weather_updates(bot)
     logger.info("Weather update scheduler started.")
 
+    schedule_shift_updates(bot)
+    logger.info("Shift update scheduler started.")
+
     keep_alive_thread = threading.Thread(target=keep_alive, daemon=True)
     keep_alive_thread.start()
     logger.info("Keep-alive thread started.")
@@ -838,7 +885,7 @@ def main():
     logger.info("Starting bot polling...")
     while True:
         try:
-            bot.polling(none_stop=True, interval=1)
+            bot.infinity_polling(none_stop=True, interval=1)
         except Exception as e:
             logger.error(f"Bot polling error: {e}")
             logger.info("Restarting bot in 5 seconds...")
