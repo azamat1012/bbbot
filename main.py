@@ -46,6 +46,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 thread_local = threading.local()
+YEKAT_TIMEZONE = pytz.timezone("Asia/Yekaterinburg")
 
 
 def check_inactivity(bot):
@@ -195,6 +196,8 @@ def create_weather_image(weather_message: str) -> BytesIO:
     return image_bytes
 
 
+SCRAPINGBEE_API_KEY = 'UC2X12YO2MANX9GKURL0A6LAFVHBCWYT33BPNUXD7B6ON4IJHTRSZ47XM7KB1VI3K9X5RAK17VKG7IPO'
+
 
 def get_shift_pdf_url_for_date(date_to_find, base_url="https://www.ects.ru/page281.htm"):
     headers = {
@@ -248,27 +251,6 @@ def get_shift_pdf_url_for_date(date_to_find, base_url="https://www.ects.ru/page2
     except requests.RequestException as e:
         print(f"Error fetching website data: {e}")
         return None
-
-
-def check_and_send_new_shift(bot: telebot.TeleBot):
-    """
-    Checks for new shifts and sends them to all users in the database.
-    """
-    today = date.today()
-    pdf_url = get_shift_pdf_url_for_date(today)
-
-    if pdf_url:
-        # Fetch all users from the database
-        users_to_notify = get_all_users()
-
-        for user_id in users_to_notify:
-            try:
-                # Send the shift to the user
-                send_todays_shift(bot, user_id)
-                logger.info(f"Sent shift update to user {user_id}")
-            except Exception as e:
-                logger.error(
-                    f"Failed to send shift update to user {user_id}: {e}")
 
 
 def download_pdf(pdf_url):
@@ -372,7 +354,7 @@ def send_todays_shift(bot: telebot.TeleBot, chat_id: int, retry_count: int = 1):
             image) for image in images]
         sent_messages = bot.send_media_group(chat_id, media_group)
         bot.send_message(
-            chat_id, "Последние изменения", reply_markup=create_first_keyboard())
+            chat_id, f"Последние изменения", reply_markup=create_first_keyboard())
         return [msg.message_id for msg in sent_messages]
 
     except Exception as e:
@@ -792,9 +774,6 @@ def send_weather(bot, forecast_type):
                 f"Failed to send weather update to user {chat_id}: {e}")
 
 
-YEKAT_TIMEZONE = pytz.timezone("Asia/Yekaterinburg")
-
-
 def get_yekaterinburg_time():
     return datetime.now(YEKAT_TIMEZONE).strftime("%H:%M")
 
@@ -818,26 +797,6 @@ def schedule_weather_updates(bot):
 
     thread = threading.Thread(target=run_scheduler, daemon=True)
     thread.start()
-
-
-def schedule_shift_updates(bot):
-    """
-    Schedules the shift update task to run every hour.
-    """
-    schedule.every().hour.do(check_and_send_new_shift, bot=bot)
-
-    def run_scheduler():
-        """
-        Runs the scheduler in a separate thread.
-        """
-        while True:
-            schedule.run_pending()
-            time.sleep(1)
-
-    # Start the scheduler in a separate thread
-    scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
-    scheduler_thread.start()
-    logger.info("Shift update scheduler started.")
 
 
 def keep_alive():
@@ -867,9 +826,6 @@ def main():
 
     schedule_weather_updates(bot)
     logger.info("Weather update scheduler started.")
-
-    schedule_shift_updates(bot)
-    logger.info("Shift update scheduler started.")
 
     keep_alive_thread = threading.Thread(target=keep_alive, daemon=True)
     keep_alive_thread.start()
