@@ -142,12 +142,12 @@ shift_messages = {
 }
 
 
-def delete_previous_shifts(bot: telebot.TeleBot, shift_type: str):
+def delete_previous_shifts(bot: telebot.TeleBot, shift_type: str, chat_id: int):
     if shift_type in shift_messages:
-        logger.info(f"Deleting previous {shift_type} messages...")
-        for chat_id, message_ids in shift_messages[shift_type].items():
-            logger.info(f"Chat ID: {chat_id}, Message IDs: {message_ids}")
-            for message_id in message_ids:
+        logger.info(
+            f"Deleting previous {shift_type} messages for chat_id {chat_id}...")
+        if chat_id in shift_messages[shift_type]:
+            for message_id in shift_messages[shift_type][chat_id]:
                 try:
                     logger.info(
                         f"Attempting to delete message ID: {message_id}")
@@ -156,7 +156,7 @@ def delete_previous_shifts(bot: telebot.TeleBot, shift_type: str):
                         f"Deleted {shift_type} message with ID: {message_id}")
                 except Exception as e:
                     logger.error(f"Failed to delete message {message_id}: {e}")
-        shift_messages[shift_type] = {}
+            shift_messages[shift_type][chat_id] = []
 
 
 def create_weather_image(weather_message: str) -> BytesIO:
@@ -504,7 +504,7 @@ def handle_callbacks(bot: telebot.TeleBot):
             bot.send_message(chat_id, f"Поэтому, мое существование и служение Тебе - истина первой инстанции! Я постараюсь сэкономить это время минимум в два раза.\nТолько включи уведомления\n Спамить не буду! Обещаю. Только самое важное\nЯ готов!🫡", reply_markup=create_first_keyboard())
 
         elif user_action == "today":
-            delete_previous_shifts(bot, 'Погода')
+            delete_previous_shifts(bot, 'Погода', chat_id)
 
             weather_message = get_weather("today")
             try:
@@ -531,7 +531,7 @@ def handle_callbacks(bot: telebot.TeleBot):
                     f"Failed to send weather image to user {chat_id}: {e}")
 
         elif user_action == "tomorrow":
-            delete_previous_shifts(bot, 'Погода')
+            delete_previous_shifts(bot, 'Погода', chat_id)
 
             weather_message = get_weather("tomorrow")
             try:
@@ -575,7 +575,7 @@ def handle_messages(bot: telebot.TeleBot):
         last_activity_time = time.time()
 
         if message.text in ['Немного вдохновения', '/inspirations']:
-            delete_previous_shifts(bot, 'Немного вдохновения')
+            delete_previous_shifts(bot, 'Немного вдохновения', message.chat.id)
 
             loading_message = bot.send_photo(
                 message.chat.id,
@@ -623,7 +623,7 @@ def handle_messages(bot: telebot.TeleBot):
                     f"Stored inspiration message ID: {sent_message.message_id}")
 
         elif message.text in ['Последние изменения', '/changes']:
-            delete_previous_shifts(bot, 'Последние изменения')
+            delete_previous_shifts(bot, 'Последние изменения', message.chat.id)
 
             loading_message = bot.send_photo(
                 message.chat.id,
@@ -644,7 +644,7 @@ def handle_messages(bot: telebot.TeleBot):
                 shift_messages['Последние изменения'][message.chat.id] = new_messages
 
         elif message.text == 'Перемены' or message.text == '/breaks':
-            delete_previous_shifts(bot, 'Перемены')
+            delete_previous_shifts(bot, 'Перемены', message.chat.id)
             sent_message = bot.send_photo(
                 message.chat.id,
                 photo=open(f"{current_dir}/media/shift2.png", 'rb'),
@@ -657,7 +657,7 @@ def handle_messages(bot: telebot.TeleBot):
             logger.info(f"Stored break message ID: {sent_message.message_id}")
 
         elif message.text == 'Основное расписание' or message.text == '/schedule':
-            delete_previous_shifts(bot, 'Основное расписание')
+            delete_previous_shifts(bot, 'Основное расписание', message.chat.id)
             sent_message = bot.send_photo(
                 message.chat.id,
                 photo=open(f"{current_dir}/media/shift.png", 'rb'),
@@ -671,7 +671,7 @@ def handle_messages(bot: telebot.TeleBot):
                 f"Stored schedule message ID: {sent_message.message_id}")
 
         elif message.text == 'Погода' or message.text == '/weather':
-            delete_previous_shifts(bot, 'Погода')
+            delete_previous_shifts(bot, 'Погода', message.chat.id)
             sent_message = bot.send_photo(
                 message.chat.id,
                 photo=open(f"{current_dir}/media/weather.png", "rb"),
@@ -739,8 +739,6 @@ def send_weather(bot, forecast_type):
         elif forecast_type == "tomorrow":
             shift_type = "Погода Вечер"
 
-        delete_previous_shifts(bot, shift_type)
-
         try:
             image_bytes = create_weather_image(weather_message)
         except Exception as e:
@@ -783,7 +781,7 @@ def schedule_weather_updates(bot):
     last_activity_time = time.time()
     logger.info(f"Current Yekaterinburg time: {get_yekaterinburg_time()}")
 
-    schedule.every().day.at("08:00", "Asia/Yekaterinburg").do(
+    schedule.every().day.at("11:12", "Asia/Yekaterinburg").do(
         send_weather, bot=bot, forecast_type="today"
     )
     schedule.every().day.at("20:55", "Asia/Yekaterinburg").do(
