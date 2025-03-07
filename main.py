@@ -574,6 +574,16 @@ def handle_messages(bot: telebot.TeleBot):
         global last_activity_time
         last_activity_time = time.time()
 
+        # Extract user details
+        user_id = message.from_user.id
+        user_name = message.from_user.first_name or "Unknown"
+        timestamp = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
+        request = message.text
+
+        # Log user interaction
+        logger.info(
+            f"User Interaction - UserID: {user_id}, Name: {user_name}, Time: {timestamp}, Request: {request}")
+
         if message.text in ['Немного вдохновения', '/inspirations']:
             delete_previous_shifts(bot, 'Немного вдохновения', message.chat.id)
 
